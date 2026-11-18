@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local App Test</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --card: #fff;
+    --border: #e2e2dc; --ok: #1f7a3a; --err: #b3261e; --accent: #2f5bd3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --fg: #ececea; --muted: #9a9a94; --card: #1e1e1c;
+            --border: #333330; --ok: #5cc27a; --err: #ff7a70; --accent: #7c9cff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input[type=url] { flex: 1 1 280px; min-width: 0; padding: 8px 10px; font: 14px var(--mono);
+          border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  select { padding: 8px; border: 1px solid var(--border); border-radius: 6px;
+           background: var(--bg); color: var(--fg); }
+  button { padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent);
+           color: #fff; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .status { font-weight: 600; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--err); }
+  pre { margin: 0; padding: 12px; background: var(--bg); border-radius: 6px;
+        overflow: auto; font: 13px/1.45 var(--mono); max-height: 420px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
+  dt { color: var(--muted); } dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+  details summary { cursor: pointer; color: var(--muted); }
+  ol { padding-left: 20px; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Local App Test</h1>
+  <p class="sub">A public HTTPS page reading JSON from a private-network HTTP host.</p>
+
+  <div class="card">
+    <label for="url">Endpoint</label>
+    <div class="row">
+      <input id="url" type="url" value="http://sime.dev.ii.zone:8000/data.json">
+      <select id="space" aria-label="Target address space">
+        <option value="auto">auto</option>
+        <option value="local">local</option>
+        <option value="private">private (legacy)</option>
+        <option value="loopback">loopback</option>
+        <option value="none">none</option>
+      </select>
+      <button id="go">Fetch</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="status" class="status">Idle</div>
+    <dl id="meta" style="margin-top:12px"></dl>
+  </div>
+
+  <div class="card">
+    <label>Response</label>
+    <pre id="out">—</pre>
+  </div>
+
+  <div class="card">
+    <label>Browser capabilities</label>
+    <dl id="env"></dl>
+    <details style="margin-top:12px">
+      <summary>How this works</summary>
+      <ol>
+        <li>The page is served over HTTPS from a public origin. The target is plain HTTP on a host that resolves to a private IP (10.x).</li>
+        <li><code>fetch()</code> is called with <code>targetAddressSpace</code>. Chrome treats the request as an intentional local-network request: it skips the mixed-content block and shows the Local Network Access permission prompt (Chrome 142+).</li>
+        <li>Older Chrome (Private Network Access) sends a preflight with <code>Access-Control-Request-Private-Network: true</code>. The server must answer <code>Access-Control-Allow-Private-Network: true</code>.</li>
+        <li>The server must always return <code>Access-Control-Allow-Origin: https://sime.github.io</code> (or <code>*</code>).</li>
+        <li>Safari and Firefox don't support <code>targetAddressSpace</code>, so they block HTTPS→HTTP as mixed content.</li>
+      </ol>
+    </details>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PAGE_ORIGIN = location.origin;
+
+function setMeta(el, pairs) {
+  el.replaceChildren();
+  for (const [k, v] of pairs) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    el.append(dt, dd);
+  }
+}
+
+// Each permission name Chrome has used for local network access.
+const PERMISSION_NAMES = ['local-network-access', 'local-network', 'loopback-network'];
+
+async function permissionStates() {
+  const out = [];
+  for (const name of PERMISSION_NAMES) {
+    try {
+      const s = await navigator.permissions.query({ name });
+      out.push([`permission: ${name}`, s.state]);
+    } catch { /* name not supported in this browser */ }
+  }
+  return out;
+}
+
+// Check which targetAddressSpace values this browser accepts. Browsers that
+// know the option reject unknown enum values with a TypeError; browsers that
+// don't know it ignore it.
+function supportsAddressSpace(value) {
+  try { new Request('https://example.invalid/', { targetAddressSpace: value }); return true; }
+  catch { return false; }
+}
+
+async function showEnv() {
+  const pairs = [
+    ['page origin', PAGE_ORIGIN],
+    ['secure context', String(window.isSecureContext)],
+    ['targetAddressSpace "local"', supportsAddressSpace('local') ? 'accepted' : 'rejected'],
+    ['targetAddressSpace "private"', supportsAddressSpace('private') ? 'accepted' : 'rejected'],
+    ...(await permissionStates()),
+    ['user agent', navigator.userAgent],
+  ];
+  setMeta($('env'), pairs);
+}
+
+// Try address-space values from newest to oldest spec.
+async function localFetch(url, space) {
+  const base = { method: 'GET', mode: 'cors', cache: 'no-store', credentials: 'omit' };
+  const order = space === 'auto' ? ['local', 'private', null]
+              : space === 'none' ? [null] : [space];
+  let lastErr;
+  for (const s of order) {
+    const init = s ? { ...base, targetAddressSpace: s } : base;
+    try {
+      // A TypeError thrown before the network means the option value is
+      // unsupported; a TypeError from the network means "Failed to fetch".
+      if (s) new Request(url, init);
+    } catch (e) { lastErr = e; continue; }
+    return { res: await fetch(url, init), used: s ?? '(none)' };
+  }
+  throw lastErr ?? new Error('No usable targetAddressSpace');
+}
+
+function explain(err, url) {
+  const u = new URL(url);
+  const hints = [];
+  if (location.protocol === 'https:' && u.protocol === 'http:')
+    hints.push('HTTPS→HTTP: needs Chrome with Local Network Access, or the request is blocked as mixed content.');
+  hints.push(`The server must send Access-Control-Allow-Origin: ${PAGE_ORIGIN}.`);
+  hints.push('Older Chrome: the OPTIONS preflight must return Access-Control-Allow-Private-Network: true.');
+  hints.push('Chrome 142+: allow the "access devices on your local network" prompt (site settings → Local network access).');
+  hints.push('You must be on the same network or VPN as the host.');
+  return `${err.name}: ${err.message}\n\nLikely causes:\n- ${hints.join('\n- ')}`;
+}
+
+async function run() {
+  const url = $('url').value.trim();
+  const space = $('space').value;
+  const btn = $('go');
+  btn.disabled = true;
+  $('status').className = 'status';
+  $('status').textContent = 'Fetching…';
+  $('out').textContent = '—';
+  const t0 = performance.now();
+  try {
+    const { res, used } = await localFetch(url, space);
+    const ms = Math.round(performance.now() - t0);
+    const text = await res.text();
+    let body = text;
+    try { body = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+    $('status').className = 'status ' + (res.ok ? 'ok' : 'err');
+    $('status').textContent = `${res.status} ${res.statusText || ''}`.trim();
+    setMeta($('meta'), [
+      ['targetAddressSpace', used],
+      ['time', `${ms} ms`],
+      ['content-type', res.headers.get('content-type') ?? '—'],
+      ['response type', res.type],
+    ]);
+    $('out').textContent = body;
+  } catch (err) {
+    $('status').className = 'status err';
+    $('status').textContent = 'Request failed';
+    setMeta($('meta'), [['time', `${Math.round(performance.now() - t0)} ms`]]);
+    $('out').textContent = explain(err, url);
+  } finally {
+    btn.disabled = false;
+    showEnv();
+  }
+}
+
+$('go').addEventListener('click', run);
+$('url').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+const params = new URLSearchParams(location.search);
+if (params.get('url')) $('url').value = params.get('url');
+showEnv();
+run();
+</script>
+</body>
+</html>
